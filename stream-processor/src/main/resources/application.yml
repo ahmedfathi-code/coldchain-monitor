@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: stream-processor
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    consumer:
+      # A brand-new consumer group starts from the oldest record instead of only new ones.
+      auto-offset-reset: earliest
+    streams:
+      # Identifies this Streams app: consumer group, internal topic names, state directory.
+      application-id: coldchain-alert-rules
+      properties:
+        # Exactly-once: consuming a reading, updating the state stores and producing the
+        # alert are committed together in one Kafka transaction. After a crash, no alert
+        # is lost and none is produced twice.
+        processing.guarantee: exactly_once_v2
+        # A record that cannot be deserialized is logged and skipped instead of stopping
+        # the whole application.
+        deserialization.exception.handler: org.apache.kafka.streams.errors.LogAndContinueExceptionHandler
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:redis_dev_password}
+
+# The web server only serves the actuator (health, metrics); this app has no API.
+server:
+  port: ${SERVER_PORT:8082}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, prometheus
+  metrics:
+    tags:
+      # Every metric gets an "application" label, so one Grafana panel can compare services.
+      application: ${spring.application.name}
+
+rules:
+  grace-period: ${RULES_GRACE_PERIOD:1m}
+  offline-after: ${RULES_OFFLINE_AFTER:5m}
+  offline-check-interval: ${RULES_OFFLINE_CHECK_INTERVAL:30s}
+  low-battery-threshold: 15

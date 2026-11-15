@@ -1,0 +1,112 @@
+spring:
+  application:
+    name: api-service
+
+  # ---- MySQL (tenants, users, devices, alerts) ----
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/coldchain
+    username: ${MYSQL_USER:coldchain}
+    password: ${MYSQL_PASSWORD:mysql_dev_password}
+  jpa:
+    # Flyway owns the schema; Hibernate only checks that the entities match it.
+    hibernate:
+      ddl-auto: validate
+    # Do not keep a database session open while the JSON response is written.
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  flyway:
+    locations: classpath:db/migration
+
+  # ---- Kafka (alerts in, device.config out) ----
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    consumer:
+      # A brand-new consumer group starts from the oldest alert instead of only new ones.
+      auto-offset-reset: earliest
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+
+  data:
+    # ---- Redis (latest readings, notification cooldown, login rate limiting) ----
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:redis_dev_password}
+      # Fail fast when Redis is down instead of the 60 s default (e.g. a login answers 500 after 2 s).
+      timeout: 2s
+      connect-timeout: 2s
+    web:
+      pageable:
+        # Protects the database from ?size=1000000
+        max-page-size: 100
+
+  # Error responses as RFC 9457 "problem details" (application/problem+json).
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  port: ${SERVER_PORT:8080}
+
+# ---- ClickHouse (telemetry history, hourly statistics, compliance reports) ----
+clickhouse:
+  url: jdbc:clickhouse://${CLICKHOUSE_HOST:localhost}:${CLICKHOUSE_PORT:8123}/coldchain
+  username: ${CLICKHOUSE_USER:coldchain}
+  password: ${CLICKHOUSE_PASSWORD:clickhouse_dev_password}
+
+# ---- JWT ----
+security:
+  jwt:
+    # HMAC-SHA256 key: at least 32 characters. Dev default only; set JWT_SECRET in production.
+    secret: ${JWT_SECRET:dev-only-jwt-secret-change-me-0123456789}
+    issuer: coldchain-api
+    # Access tokens are short-lived (they cannot be revoked); refresh tokens get new ones.
+    expiry: ${JWT_EXPIRY:15m}
+    refresh-expiry: ${JWT_REFRESH_EXPIRY:7d}
+  # Failed login / refresh attempts allowed before answering 429 (counters in Redis)
+  login-rate-limit:
+    max-failures-per-user: ${LOGIN_MAX_FAILURES_PER_USER:5}
+    max-failures-per-ip: ${LOGIN_MAX_FAILURES_PER_IP:20}
+    window: ${LOGIN_RATE_LIMIT_WINDOW:15m}
+
+management:
+  server:
+    # Actuator (health, metrics) on its own port, which is NOT published: metrics are for
+    # Prometheus inside the network, never for the public API port.
+    port: ${MANAGEMENT_PORT:8081}
+  endpoints:
+    web:
+      exposure:
+        include: health, prometheus
+  metrics:
+    tags:
+      # Every metric gets an "application" label, so one Grafana panel can compare services.
+      application: ${spring.application.name}
+    distribution:
+      # Latency buckets for http.server.requests, so Grafana can show the 95th percentile.
+      percentiles-histogram:
+        http.server.requests: true
+
+springdoc:
+  swagger-ui:
+    # Keep the token when the page is reloaded
+    persist-authorization: true
+
+# ---- Transactional outbox (device.config messages) ----
+outbox:
+  # How often the relay publishes pending messages to Kafka
+  poll-interval: ${OUTBOX_POLL_INTERVAL:1s}
+  # Published messages are kept this long (for troubleshooting), then deleted
+  retention: 7d
+  cleanup-interval: 1h
+
+notifications:
+  cooldown: ${NOTIFICATION_COOLDOWN:30m}
+  telegram:
+    api-url: https://api.telegram.org
+    # Leave empty to log notifications instead of sending them.
+    bot-token: ${TELEGRAM_BOT_TOKEN:}
+    chat-id: ${TELEGRAM_CHAT_ID:}

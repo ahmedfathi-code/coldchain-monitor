@@ -1,0 +1,40 @@
+# --- Maven ---
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+# Keep the Maven wrapper jar/properties (they are needed to build without a local Maven)
+!.mvn/wrapper/maven-wrapper.jar
+
+# --- Java ---
+*.class
+*.log
+hs_err_pid*
+replay_pid*
+
+# --- IntelliJ IDEA ---
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# --- Eclipse / VS Code (common for contributors) ---
+.classpath
+.project
+.settings/
+.vscode/
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+
+# --- Environment / secrets (never commit real values; .env.example is the template) ---
+.env
+.env.*
+!.env.example

@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        The Spring Boot parent gives us:
+        - dependency versions for Spring, Kafka, Jackson, JUnit, Testcontainers, ... (a BOM)
+        - sensible plugin configuration (compiler, surefire, failsafe, spring-boot plugin)
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.1</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.coldchain</groupId>
+    <artifactId>coldchain-monitor</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>coldchain-monitor</name>
+    <description>Real-time cold-chain monitoring platform for pharmacies and medicine trucks</description>
+
+    <modules>
+        <module>common</module>
+        <module>device-simulator</module>
+        <module>ingestion-service</module>
+        <module>stream-processor</module>
+        <module>api-service</module>
+    </modules>
+
+    <properties>
+        <java.version>21</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Versions of libraries that are NOT managed by the Spring Boot BOM -->
+        <paho-mqtt.version>1.2.5</paho-mqtt.version>
+        <springdoc.version>3.1.1</springdoc.version>
+        <clickhouse-jdbc.version>0.10.0</clickhouse-jdbc.version>
+        <shedlock.version>7.10.1</shedlock.version>
+    </properties>
+
+    <!--
+        dependencyManagement only DECLARES versions; it does not add dependencies.
+        Modules list what they need without a <version>, and get the version from here
+        (or from the Spring Boot BOM inherited through the parent).
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.coldchain</groupId>
+                <artifactId>common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <!-- MQTT client used by the device simulator and the ingestion service -->
+            <dependency>
+                <groupId>org.eclipse.paho</groupId>
+                <artifactId>org.eclipse.paho.client.mqttv3</artifactId>
+                <version>${paho-mqtt.version}</version>
+            </dependency>
+            <!-- Swagger UI / OpenAPI documentation for the api-service -->
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <!-- JDBC driver used by the api-service to query ClickHouse -->
+            <dependency>
+                <groupId>com.clickhouse</groupId>
+                <artifactId>clickhouse-jdbc</artifactId>
+                <version>${clickhouse-jdbc.version}</version>
+            </dependency>
+            <!-- ShedLock: lets only one api-service instance run the outbox relay at a time -->
+            <dependency>
+                <groupId>net.javacrumbs.shedlock</groupId>
+                <artifactId>shedlock-spring</artifactId>
+                <version>${shedlock.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>net.javacrumbs.shedlock</groupId>
+                <artifactId>shedlock-provider-jdbc-template</artifactId>
+                <version>${shedlock.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>

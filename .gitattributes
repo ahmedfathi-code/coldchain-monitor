@@ -1,0 +1,14 @@
+# Normalise line endings in the repository.
+* text=auto
+
+# Shell scripts and config files are mounted into Linux containers: they must keep LF
+# endings even when the repo is checked out on Windows, or they fail with "\r" errors.
+*.sh text eol=lf
+*.conf text eol=lf
+*.acl text eol=lf
+mvnw text eol=lf
+
+# Windows scripts keep CRLF.
+*.cmd text eol=crlf
+
+*.jar binary

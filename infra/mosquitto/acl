@@ -1,0 +1,12 @@
+# Mosquitto access control list: one block per service account.
+# "+" matches exactly one topic level.
+
+# The device simulator may only publish telemetry.
+user simulator
+topic write coldchain/+/devices/+/telemetry
+
+# The ingestion service may only read telemetry.
+# It may also read the broker uptime, which the Docker healthcheck uses.
+user ingestion
+topic read coldchain/+/devices/+/telemetry
+topic read $SYS/broker/uptime

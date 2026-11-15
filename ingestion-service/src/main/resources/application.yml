@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: ingestion-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Values are already bytes: the JSON of valid readings, or the untouched payload for the DLQ.
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+      # Wait until every in-sync replica has the record before Kafka confirms it.
+      acks: all
+      properties:
+        # The producer tags records with a sequence number, so its automatic retries can
+        # never write the same record twice.
+        enable.idempotence: true
+
+server:
+  port: ${SERVER_PORT:8081}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      # Every metric gets an "application" label, so one Grafana panel can compare services.
+      application: ${spring.application.name}
+
+mqtt:
+  url: ${MQTT_URL:tcp://localhost:1883}
+  username: ingestion
+  password: ${MQTT_PASSWORD:ingestion_dev_password}
+  client-id: ingestion-service
+  topic-filter: coldchain/+/devices/+/telemetry

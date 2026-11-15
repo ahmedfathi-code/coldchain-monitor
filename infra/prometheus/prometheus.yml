@@ -1,0 +1,15 @@
+# Prometheus pulls ("scrapes") metrics from every service's /actuator/prometheus endpoint
+# over the Docker network. Nothing here is reachable from outside except the Prometheus UI
+# (http://localhost:9090, bound to localhost in docker-compose.yml).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: coldchain
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - ingestion-service:8081
+          - stream-processor:8082
+          - api-service:8081   # the api-service's internal management port, not its public 8080

@@ -1,0 +1,350 @@
+# coldchain-monitor local environment.
+#
+# Start (from the repo root):  docker compose -f infra/docker-compose.yml up -d
+# Start (from infra/):         docker compose up -d
+# Stop and delete all data:    docker compose -f infra/docker-compose.yml down -v
+#
+# Every credential below is an environment variable with a DEV-ONLY default, so a fresh clone
+# starts with one command. To override values, copy ../.env.example to infra/.env
+# (Compose reads the .env file next to this compose file). See docs/decisions.md ADR-006.
+#
+# Host ports are bound to 127.0.0.1, so these services are only reachable from this machine.
+
+name: coldchain
+
+services:
+
+  # ---------------------------------------------------------------- MQTT broker
+  mosquitto:
+    image: eclipse-mosquitto:2.0.22
+    # init.sh generates the password file from the env vars below, then starts Mosquitto.
+    entrypoint: ["sh", "/mosquitto/init.sh"]
+    environment:
+      MQTT_SIMULATOR_PASSWORD: ${MQTT_SIMULATOR_PASSWORD:-simulator_dev_password}
+      MQTT_INGESTION_PASSWORD: ${MQTT_INGESTION_PASSWORD:-ingestion_dev_password}
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl:/mosquitto/config/acl:ro
+      - ./mosquitto/init.sh:/mosquitto/init.sh:ro
+      - mosquitto-data:/mosquitto/data
+    ports:
+      - "127.0.0.1:1883:1883"
+    healthcheck:
+      # Healthy when the ingestion account can log in and read the broker uptime.
+      # ($$ is how Compose writes a literal $.)
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -u ingestion -P \"$$MQTT_INGESTION_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 5"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------- Kafka (KRaft, single node)
+  kafka:
+    image: apache/kafka:4.2.1
+    environment:
+      # One node that is both broker and controller: KRaft mode, no ZooKeeper.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # INTERNAL: used by containers (kafka:9092). EXTERNAL: used from the host (localhost:29092).
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # A single broker cannot replicate internal topics more than once.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      # Topics are created explicitly by kafka-init (see ADR-008).
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # Consumer groups start immediately instead of waiting 3s for more members (dev only).
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:29092:29092"
+    healthcheck:
+      # Healthy when the broker answers an API request.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 15s
+      retries: 10
+      start_period: 20s
+
+  # One-shot container: creates the topics, then exits with code 0.
+  kafka-init:
+    image: apache/kafka:4.2.1
+    entrypoint: ["sh", "/scripts/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVER: kafka:9092
+    volumes:
+      - ./kafka/create-topics.sh:/scripts/create-topics.sh:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------- ClickHouse (telemetry history)
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      CLICKHOUSE_DB: coldchain
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-coldchain}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse_dev_password}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      # Creates the tables on the first start (empty data volume). See clickhouse/init.sql.
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    depends_on:
+      # The Kafka engine table consumes telemetry.raw, so the topic should exist first.
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8123:8123" # HTTP interface (used by JDBC and for manual queries)
+    healthcheck:
+      # /ping answers "Ok." as soon as the server accepts queries (no login needed).
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---------------------------------------------------------------- Redis (latest state, cooldowns)
+  redis:
+    image: redis:8.2-alpine
+    # Password taken from the environment (not written in the command line in this file).
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_dev_password}
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ---------------------------------------------------------------- MySQL (api-service data)
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: coldchain
+      MYSQL_USER: ${MYSQL_USER:-coldchain}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-mysql_dev_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-mysql_root_dev_password}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3306:3306"
+    healthcheck:
+      # -h 127.0.0.1 forces TCP: during first-time initialisation MySQL runs a temporary
+      # server without networking, so this only succeeds once the real server is up.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u \"$$MYSQL_USER\" -p\"$$MYSQL_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ---------------------------------------------------------------- Kafka UI (optional dev tool)
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.4.2
+    environment:
+      KAFKA_CLUSTERS_0_NAME: coldchain
+      KAFKA_CLUSTERS_0_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "127.0.0.1:8089:8080" # http://localhost:8089 (8080 is kept free for the api-service)
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ================================================================ Application services
+  # Built from the multi-stage Dockerfile at the repo root (one image per module).
+
+  ingestion-service:
+    build:
+      context: ..
+      args:
+        MODULE: ingestion-service
+    image: coldchain/ingestion-service
+    environment:
+      MQTT_URL: tcp://mosquitto:1883
+      MQTT_PASSWORD: ${MQTT_INGESTION_PASSWORD:-ingestion_dev_password}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "127.0.0.1:8081:8081" # http://localhost:8081/actuator/health
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # Actuator answers HTTP 503 when DOWN, so --spider fails unless everything is UP.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8081/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  stream-processor:
+    build:
+      context: ..
+      args:
+        MODULE: stream-processor
+    image: coldchain/stream-processor
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_dev_password}
+      RULES_OFFLINE_AFTER: ${RULES_OFFLINE_AFTER:-5m}
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # Port 8082 (health, metrics) is only used inside the Docker network.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8082/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  api-service:
+    build:
+      context: ..
+      args:
+        MODULE: api-service
+    image: coldchain/api-service
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: ${MYSQL_USER:-coldchain}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-mysql_dev_password}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-coldchain}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse_dev_password}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_dev_password}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-0123456789}
+      JWT_EXPIRY: ${JWT_EXPIRY:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-7d}
+      LOGIN_MAX_FAILURES_PER_USER: ${LOGIN_MAX_FAILURES_PER_USER:-5}
+      LOGIN_MAX_FAILURES_PER_IP: ${LOGIN_MAX_FAILURES_PER_IP:-20}
+      LOGIN_RATE_LIMIT_WINDOW: ${LOGIN_RATE_LIMIT_WINDOW:-15m}
+      OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1s}
+      NOTIFICATION_COOLDOWN: ${NOTIFICATION_COOLDOWN:-30m}
+      # Optional: without them, notifications are written to the log instead.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    ports:
+      - "127.0.0.1:8080:8080" # http://localhost:8080/swagger-ui.html
+    depends_on:
+      mysql:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # Actuator runs on the internal management port 8081, which is not published.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8081/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
+  device-simulator:
+    build:
+      context: ..
+      args:
+        MODULE: device-simulator
+    image: coldchain/device-simulator
+    environment:
+      MQTT_URL: tcp://mosquitto:1883
+      MQTT_PASSWORD: ${MQTT_SIMULATOR_PASSWORD:-simulator_dev_password}
+      SIMULATOR_PUBLISH_INTERVAL: ${SIMULATOR_PUBLISH_INTERVAL:-5s}
+      # Per-device scenarios, e.g. nile-fridge-01=POWER_OUTAGE (empty = every device NORMAL)
+      SIMULATOR_SCENARIOS: ${SIMULATOR_SCENARIOS:-}
+    depends_on:
+      # Start publishing only once the ingestion service is subscribed, so no reading of
+      # the very first run is lost.
+      ingestion-service:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- Observability
+  # Prometheus scrapes /actuator/prometheus of the three services (infra/prometheus).
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090" # http://localhost:9090 (targets: Status > Target health)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/-/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # Grafana with the Prometheus data source and the "Coldchain overview" dashboard
+  # provisioned from files (infra/grafana): nothing to click after startup.
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-grafana_dev_password}
+      # Demo convenience: the dashboard can be viewed without logging in (read-only).
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/coldchain.json
+      # Only the built-in Prometheus data source is used: do not download plugins at startup.
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000" # http://localhost:3000
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data:
+  kafka-data:
+  clickhouse-data:
+  redis-data:
+  mysql-data:
+  prometheus-data:

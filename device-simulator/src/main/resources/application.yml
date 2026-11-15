@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: device-simulator
+  main:
+    # No web server in this app: keep the JVM running so the scheduler keeps publishing.
+    keep-alive: true
+
+simulator:
+  publish-interval: ${SIMULATOR_PUBLISH_INTERVAL:5s}
+  mqtt:
+    url: ${MQTT_URL:tcp://localhost:1883}
+    username: simulator
+    password: ${MQTT_PASSWORD:simulator_dev_password}
+    client-id: device-simulator
+  # Per-device scenario overrides, e.g. "nile-fridge-01=POWER_OUTAGE,delta-fridge-02=LOW_BATTERY".
+  # Devices not listed keep the scenario below.
+  scenarios: ${SIMULATOR_SCENARIOS:}
+  # Demo devices. The ids must match the seed data of the api-service (see docs/decisions.md).
+  devices:
+    - tenant-id: nile-pharmacy
+      device-id: nile-fridge-01
+      scenario: NORMAL
+    - tenant-id: nile-pharmacy
+      device-id: nile-truck-01
+      scenario: NORMAL
+    - tenant-id: delta-pharmacy
+      device-id: delta-fridge-01
+      scenario: NORMAL
+    - tenant-id: delta-pharmacy
+      device-id: delta-fridge-02
+      scenario: NORMAL

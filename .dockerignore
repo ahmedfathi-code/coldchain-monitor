@@ -1,0 +1,10 @@
+# Keep the Docker build context small: only POMs, the wrapper and sources are needed.
+**/target/
+.git/
+.idea/
+*.iml
+.vscode/
+infra/
+docs/
+.env
+.env.*
